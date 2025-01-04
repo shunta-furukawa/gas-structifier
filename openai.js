@@ -5,7 +5,7 @@
  * @param {string} systemPrompt - The system-level instruction or context for the model.
  * @param {string} userPrompt - The user-level input or query for the model.
  * @param {string} [model='gpt-4'] - The OpenAI model to use (default is 'gpt-4').
- * @return {Object} The parsed JSON response from the OpenAI API.
+ * @return {string} The raw string output from the OpenAI API.
  * @throws {Error} If the API key is not set or if the API request fails.
  */
 function callOpenAIAPI(systemPrompt, userPrompt, model = 'gpt-4') {
@@ -43,7 +43,9 @@ function callOpenAIAPI(systemPrompt, userPrompt, model = 'gpt-4') {
         }
 
         // Parse and return the JSON response from the API
-        return JSON.parse(response.getContentText());
+        // Extract and return the content from the API response
+        const responseData = JSON.parse(response.getContentText());
+        return responseData.choices[0].message.content.trim(); // Return the message content
     } catch (error) {
         // Log and throw any errors that occur during the API request
         Logger.log(`ERROR: Failed to call OpenAI API - ${error.message}`);
