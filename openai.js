@@ -46,6 +46,7 @@ function callOpenAIAPI(systemPrompt, userPrompt, model = 'gpt-4') {
         // Extract and return the content from the API response
         const responseData = JSON.parse(response.getContentText());
         return responseData.choices[0].message.content.trim(); // Return the message content
+        
     } catch (error) {
         // Log and throw any errors that occur during the API request
         Logger.log(`ERROR: Failed to call OpenAI API - ${error.message}`);
