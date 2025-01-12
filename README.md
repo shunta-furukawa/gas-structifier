@@ -1,6 +1,6 @@
 # gas-structifier
 
-`gas-structifier` is a Google Apps Script library designed to help transform unstructured data in Google Sheets into structured data based on a specified schema. For example, it simplifies organizing free-text survey data collected via Google Home. This library is easy to use through custom functions.
+`gas-structifier` is a Google Apps Script library designed to help transform unstructured data in Google Sheets into structured data based on a specified schema. For example, it simplifies organizing free-text survey data collected via Google Form. This library is easy to use through custom functions.
 
 ---
 
