@@ -18,7 +18,7 @@
    - Open the script editor (e.g., from Google Sheets: `Extensions > Apps Script`).
    - Select `Libraries` from the menu and enter the following script ID to add the library:
      ```
-     Script ID: Add the library script ID here
+     Script ID: 1EDhKN-alioE4fwlEaPYJWbxJbIgHnpKUrJJs1HSud1y1rJatdKkBdAJI
      ```
    - Select the latest version and save.
 

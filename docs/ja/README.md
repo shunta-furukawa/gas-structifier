@@ -18,7 +18,7 @@
    - スクリプトエディタを開きます（例: Google スプレッドシートから `拡張機能 > Apps Script`）。
    - メニューから `ライブラリ` を選択し、次のスクリプト ID を入力してライブラリを追加します。
      ```
-     スクリプト ID: Add the library script ID here
+     スクリプト ID: 1EDhKN-alioE4fwlEaPYJWbxJbIgHnpKUrJJs1HSud1y1rJatdKkBdAJI
      ```
    - 最新バージョンを選択して保存します。
 
