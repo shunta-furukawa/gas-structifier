@@ -3,58 +3,107 @@
  * Converts natural language input into structured data and expands rows as necessary.
  *
  * @param {Array} inputRange - A 2D array where the first column is an identifier and the second column is the input text.
- * @param {Array} schemaRange - A 2D array where the first row contains column names and the second row contains their descriptions.
+ * @param {Array} schemaRange - A 2D array where the first row contains column names and the second row contains their descriptions, and the third row contains data types.
  * @param {string} [rowSeparator="|"] - The separator used to join rows in the output.
  * @param {string} [columnSeparator=","] - The separator used to join columns within each row.
  * @return {string} A string where each row is joined by columnSeparator and rows are joined by rowSeparator.
  * @throws {Error} If inputRange or schemaRange is not valid (e.g., incorrect size or format).
  */
 function STRUCTIFY(inputRange, schemaRange, rowSeparator = "|", columnSeparator = ",") {
-    // Validate the inputRange format
     validateInputRange(inputRange);
-
-    // Validate the schemaRange format
     validateSchemaRange(schemaRange);
 
-    // Parse the schema for later use
-    const schema = parseSchema(schemaRange);
+    // 1) schemaRange を parse
+    const schemaArray = parseSchema(schemaRange);
 
-    const result = [];
+    // 2) JSON Schema (トップレベルは 'object')
+    //    - 'records' プロパティを配列にして、items をスキーマ定義
+    const jsonSchema = {
+        type: "object",
+        properties: {
+            records: {
+                type: "array",
+                items: {
+                    type: "object",
+                    properties: {},
+                    required: [],
+                    additionalProperties: false
+                }
+            }
+        },
+        required: ["records"],
+        additionalProperties: false
+    };
+
+    // スキーマ配列 { key, description, type } を JSON Schema にマッピング
+    schemaArray.forEach(({ key, description, type }) => {
+        let schemaType;
+        switch (type) {
+            case "string":
+                schemaType = "string";
+                break;
+            case "number":
+                schemaType = "number";
+                break;
+            case "boolean":
+                schemaType = "boolean";
+                break;
+            case "date":
+                // 'date' はネイティブ対応がないので string 扱い
+                schemaType = "string";
+                break;
+            default:
+                schemaType = "string";
+        }
+        // プロパティ追加
+        jsonSchema.properties.records.items.properties[key] = {
+            type: schemaType,
+            description: description
+        };
+        // required に追加
+        jsonSchema.properties.records.items.required.push(key);
+    });
+
+    // 3) inputRange の各行を処理
+    const resultRows = [];
     for (let i = 0; i < inputRange.length; i++) {
         const identifier = inputRange[i][0];
         const inputText = inputRange[i][1];
 
-        const systemPrompt =
-            "Your task is to convert natural language input into structured data based on a given schema. " +
-            "The schema is provided as a JSON array where each item has a 'key' (the property name), a 'description' (explaining the attribute), " +
-            "and a 'type' (indicating the expected data type such as string, number, boolean, or date). " +
-            "Your job is to extract information from the input text and assign it to the corresponding 'key' in the schema. " +
-            "The 'key' must always match the schema exactly and be in snake_case, while the values must match the expected 'type'. " +
-            "The output must be a valid JSON array where each item corresponds to a single structured record. " +
-            "Do not include any extra text outside the JSON structure.\n\n" +
-            "Schema:\n" +
-            `${JSON.stringify(schema, null, 2)}\n\n` +
-            "Here is an example of the expected output format based on the schema:\n" +
-            `${generateExampleOutput(schema)}\n\n` +
-            "Each 'key' in the output corresponds to an entry in the schema. Below is a detailed explanation of each key:\n\n" +
-            schema.map(item => `- ${item.key} (${item.type}): ${item.description}`).join("\n") + "\n\n" +
-            "Now, process the following input text according to the schema and rules described above:\n";
+        // システムメッセージ例
+        const systemPrompt = `
+        You are provided with a JSON Schema that describes an object whose "records" property is an array of objects.
+        Each object in "records" must strictly follow the schema (strict=true, no extra keys).
+        Convert the user's input text into valid JSON for "records" according to the schema.
+        If certain information is missing, fill with empty or default values.
+      `;
 
-        const rawOutput = callOpenAIAPI(systemPrompt, inputText);
+        try {
+            // 4) API呼び出し
+            const responseObject = callOpenAIStructuredOutputs(systemPrompt, inputText, jsonSchema);
+            // responseObject は { "records": [ {key1: val1, key2:val2 ...}, ... ] } の形になる
+            const structuredDataArray = responseObject?.records;
+            if (!Array.isArray(structuredDataArray)) {
+                throw new Error("No valid 'records' array in the response");
+            }
 
-        // Validate and parse the output into JSON
-        const structuredData = parseJSON(rawOutput);
+            // 5) structuredDataArray をループし、[identifier, ...values] の行データを作る
+            for (const record of structuredDataArray) {
+                // schemaArray の順番どおり値を取得
+                const rowValues = schemaArray.map(s => record[s.key]);
+                resultRows.push([identifier, ...rowValues]);
+            }
 
-        // Normalize the result
-        for (const row of structuredData) {
-            result.push([identifier, ...Object.values(row)]);
+        } catch (error) {
+            Logger.log("Error or refusal: " + error);
+            // fallback: push empty row if needed
+            resultRows.push([identifier, ...schemaArray.map(() => "")]);
         }
     }
 
-    // Join rows and columns with the specified separators
-    return result.map(row => row.join(columnSeparator)).join(rowSeparator);
+    // 6) 連結して返す
+    return resultRows.map(row => row.join(columnSeparator)).join(rowSeparator);
 }
-
 
 /**
  * SCHEMIFY: Generates a schema from a natural language description.
@@ -66,8 +115,8 @@ function STRUCTIFY(inputRange, schemaRange, rowSeparator = "|", columnSeparator 
  * @throws {Error} If the OpenAI API response is not in the expected format or contains unsupported types.
  */
 function SCHEMIFY(naturalLanguageInput) {
-    // Use OpenAI API to generate a schema from natural language input
-    const rawOutput = callOpenAIAPI(
+    // システム指示文 (以前と同じ)
+    const systemPrompt =
         "Your task is to generate a JSON schema based on the natural language description provided below. " +
         "The schema should be represented as a JSON array where each item is an object containing a 'key', a 'description', and a 'type'. " +
         "The 'key' should be a concise, snake_case identifier representing the attribute in English. " +
@@ -88,18 +137,58 @@ function SCHEMIFY(naturalLanguageInput) {
         "  {\"key\": \"age\", \"description\": \"ユーザーの年齢を表す数値\", \"type\": \"number\"}\n" +
         "]\n\n" +
         "Please make sure to only include attributes relevant to the natural language description provided below.\n\n" +
-        "Input description: ",
-        naturalLanguageInput
-    );    
+        "Input description: ";
 
-    // Validate and parse the output into JSON
-    const schemaArray = parseJSON(rawOutput);
+    // ---- JSON Schema (ルートは "object") ----
+    // 配列は "schema_items" のプロパティとして内包
+    const schemaObj = {
+        type: "object",
+        properties: {
+            schema_items: {
+                type: "array",
+                items: {
+                    type: "object",
+                    properties: {
+                        key: {
+                            type: "string",
+                            description: "A concise, snake_case identifier in English"
+                        },
+                        description: {
+                            type: "string",
+                            description: "Explanation in the same language as the input"
+                        },
+                        type: {
+                            type: "string",
+                            description: "One of: string, number, date, boolean",
+                            enum: ["string", "number", "date", "boolean"]
+                        }
+                    },
+                    required: ["key", "description", "type"],
+                    additionalProperties: false
+                }
+            }
+        },
+        required: ["schema_items"],
+        additionalProperties: false
+    };
 
-    // Validate that the parsed JSON is in the expected format (array of objects with 'key', 'description', and 'type')
+    // モデルからは「{ schema_items: [...] }」という形式で返ってくる
+    const responseObject = callOpenAIStructuredOutputs(systemPrompt, naturalLanguageInput, schemaObj);
+
+    // "schema_items" の配列があるか確認
+    const schemaArray = responseObject?.schema_items;
+    if (!Array.isArray(schemaArray)) {
+        throw new Error("Invalid response: 'schema_items' is missing or not an array.");
+    }
+
+    // ---- バリデーション & 2D配列化 ----
     if (
-        !Array.isArray(schemaArray) ||
         !schemaArray.every(
-            item => item.key && item.description && item.type && ["string", "number", "date", "boolean"].includes(item.type)
+            item =>
+                item.key &&
+                item.description &&
+                item.type &&
+                ["string", "number", "date", "boolean"].includes(item.type)
         )
     ) {
         throw new Error(
@@ -107,12 +196,126 @@ function SCHEMIFY(naturalLanguageInput) {
         );
     }
 
-    // Transform the schema into a 2D array format
-    const columns = schemaArray.map(item => item.key); // Extract keys
-    const descriptions = schemaArray.map(item => item.description); // Extract descriptions
-    const types = schemaArray.map(item => item.type); // Extract types
+    // カラム(キー), 記述, 型をそれぞれ抽出
+    const columns = schemaArray.map(item => item.key);
+    const descriptions = schemaArray.map(item => item.description);
+    const types = schemaArray.map(item => item.type);
 
+    // 3行構成の 2D 配列を返す
     return [columns, descriptions, types];
+}
+
+
+/**
+ * callOpenAIStructuredOutputs: Calls the OpenAI Chat Completions API with Structured Outputs enabled.
+ *
+ * @param {string} systemPrompt - Instructions for the system.
+ * @param {string} userText - The user's input text to be converted into structured JSON.
+ * @param {Object} schemaObj - The JSON Schema object describing the required output structure.
+ * @return {Array|Object} The JSON-parsed model output (most commonly an array if the schema is defined as `type="array"`).
+ * @throws {Error} If the API call fails, the model refuses (refusal), or no valid JSON is returned.
+ */
+function callOpenAIStructuredOutputs(systemPrompt, userText, schemaObj) {
+
+    // Retrieve the OpenAI API key from the script properties
+    const apiKey = getOpenAIKey(); // Throws an error if the key is not set
+    const apiUrl = "https://api.openai.com/v1/chat/completions";
+
+    const payload = {
+        model: "gpt-4o-2024-08-06", // Adjust model as needed
+        messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userText }
+        ],
+        response_format: {
+            type: "json_schema",
+            json_schema: {
+                name: "structured_data",
+                strict: true,
+                schema: schemaObj
+            }
+        },
+        max_tokens: 512
+    };
+
+    const options = {
+        method: "post",
+        contentType: "application/json",
+        payload: JSON.stringify(payload),
+        headers: {
+            Authorization: "Bearer " + apiKey
+        },
+        muteHttpExceptions: true
+    };
+
+    const response = UrlFetchApp.fetch(apiUrl, options);
+    const result = JSON.parse(response.getContentText());
+
+    if (result?.error) {
+        throw new Error("OpenAI API error: " + JSON.stringify(result.error));
+    }
+    if (result?.choices?.[0]?.message?.refusal) {
+        throw new Error("Refusal: " + result.choices[0].message.refusal);
+    }
+
+    const content = result.choices[0].message?.content;
+    if (!content) {
+        throw new Error("No valid content in the response");
+    }
+
+    try {
+        return JSON.parse(content);
+    } catch (e) {
+        throw new Error("Failed to parse JSON content: " + content);
+    }
+}
+
+/**
+ * parseSchema: Reads a 2D array and converts it into an array of { key, description, type }.
+ *
+ * @param {Array} schemaRange - A 2D array where:
+ *   - row 1: list of column keys (e.g. ["name","age"])
+ *   - row 2: descriptions for each key
+ *   - row 3: data types for each key (e.g. "string","number","boolean","date")
+ * @return {Object[]} An array of objects, each containing { key, description, type }.
+ */
+function parseSchema(schemaRange) {
+    const columns = schemaRange[0];
+    const descriptions = schemaRange[1];
+    const types = schemaRange[2];
+    return columns.map((key, i) => ({
+        key,
+        description: descriptions[i],
+        type: types[i]
+    }));
+}
+
+/**
+ * validateInputRange: Checks whether inputRange is a valid 2D array.
+ *
+ * @param {Array} inputRange - A 2D array; row: [identifier, text].
+ * @throws {Error} If inputRange is not valid.
+ */
+function validateInputRange(inputRange) {
+    if (!Array.isArray(inputRange)) {
+        throw new Error("inputRange must be an array");
+    }
+    // Additional validation as needed
+}
+
+/**
+ * validateSchemaRange: Checks whether schemaRange is a valid 2D array with at least 3 rows.
+ *
+ * @param {Array} schemaRange - A 2D array; must have rows for keys, descriptions, and types.
+ * @throws {Error} If schemaRange is not valid.
+ */
+function validateSchemaRange(schemaRange) {
+    if (!Array.isArray(schemaRange) || schemaRange.length < 3) {
+        throw new Error(
+            "schemaRange must have at least 3 rows: keys, descriptions, and types."
+        );
+    }
+    // Additional validation as needed
 }
 
 /**
@@ -164,143 +367,6 @@ function validateSchemaRange(schemaRange) {
         throw new Error(
             `Invalid schemaRange: The third row (types) must contain only the following types: ${validTypes.join(', ')}.`
         );
-    }
-}
-
-
-/**
- * Parses a schema from a schema range.
- *
- * @param {Array} schemaRange - A 2D array where the first row contains column names (keys),
- * the second row contains their descriptions, and the third row contains their types.
- * @return {Object[]} An array of objects representing the schema, where each object has 'key', 'description', and 'type'.
- */
-function parseSchema(schemaRange) {
-    const columns = schemaRange[0]; // First row: Column names (keys)
-    const descriptions = schemaRange[1]; // Second row: Descriptions
-    const types = schemaRange[2]; // Third row: Types
-
-    return columns.map((key, index) => ({
-        key,
-        description: descriptions[index],
-        type: types[index]
-    }));
-}
-
-/**
- * Parses a raw output into JSON.
- * Extracts the first valid JSON object or array from the input, even if there is additional text.
- *
- * @param {string|Object} rawOutput - The raw output from OpenAI, either as a string or an object.
- * @return {Object} The parsed JSON object or array.
- * @throws {Error} If no valid JSON could be extracted or parsed.
- */
-function parseJSON(rawOutput) {
-    try {
-        // If rawOutput is already an object or array, return it directly
-        if (typeof rawOutput === 'object') {
-            return rawOutput;
-        }
-
-        // Use a regular expression to extract the JSON part if necessary
-        const jsonMatch = rawOutput.match(/(\{[\s\S]*\}|\[[\s\S]*\])/); // Matches JSON object or array
-        if (!jsonMatch) {
-            throw new Error("No valid JSON found in the output.");
-        }
-
-        // Parse the matched JSON string
-        return JSON.parse(jsonMatch[0]);
-    } catch (error) {
-        Logger.log(`ERROR: Failed to parse JSON - ${error.message}`);
-        throw new Error(`Failed to parse JSON: ${error.message}\nOutput received: ${rawOutput}`);
-    }
-}
-
-/**
- * Generates an example JSON output based on the provided schema.
- * 
- * @param {Array} schema - An array of schema objects, where each object contains 'key', 'description', and 'type'.
- * @return {string} A formatted JSON string representing an example output.
- */
-function generateExampleOutput(schema) {
-    // Create a sample object based on the schema keys and types
-    const exampleObject = {};
-    schema.forEach(item => {
-        switch (item.type) {
-            case "string":
-                exampleObject[item.key] = "ABC"; // Generic string example
-                break;
-            case "number":
-                exampleObject[item.key] = 0; // Generic number example
-                break;
-            case "boolean":
-                exampleObject[item.key] = false; // Generic boolean example
-                break;
-            case "date":
-                exampleObject[item.key] = "2023-01-01"; // Generic date example (ISO format)
-                break;
-            default:
-                exampleObject[item.key] = "N/A"; // Fallback for unknown types
-        }
-    });
-
-    // Return the object as a formatted JSON string
-    return JSON.stringify([exampleObject], null, 2);
-}
-
-/**
- * Calls the OpenAI API with the provided system prompt, user prompt, and model.
- * This function sends the specified prompts to the OpenAI API and returns the response.
- *
- * @param {string} systemPrompt - The system-level instruction or context for the model.
- * @param {string} userPrompt - The user-level input or query for the model.
- * @param {string} [model='gpt-4'] - The OpenAI model to use (default is 'gpt-4').
- * @return {string} The raw string output from the OpenAI API.
- * @throws {Error} If the API key is not set or if the API request fails.
- */
-function callOpenAIAPI(systemPrompt, userPrompt, model = 'gpt-4') {
-    // Retrieve the OpenAI API key from the script properties
-    const token = getOpenAIKey(); // Throws an error if the key is not set
-
-    // Construct the prompt payload for the OpenAI API
-    const payload = {
-        model: model, // Specify the model to use
-        messages: [
-            { role: 'system', content: systemPrompt }, // System-level prompt
-            { role: 'user', content: userPrompt } // User-level prompt
-        ],
-        max_tokens: 1000 // The maximum number of tokens in the response
-    };
-
-    // Set up the options for the API request
-    const options = {
-        method: 'post', // HTTP POST method is used to send data to the API
-        contentType: 'application/json', // The content type is set to JSON
-        headers: {
-            'Authorization': `Bearer ${token}` // Include the API key in the Authorization header
-        },
-        payload: JSON.stringify(payload) // Serialize the payload to JSON
-    };
-
-    try {
-        // Send the request to the OpenAI API and get the response
-        const response = UrlFetchApp.fetch('https://api.openai.com/v1/chat/completions', options);
-
-        // Check for non-200 HTTP response codes
-        const responseCode = response.getResponseCode();
-        if (responseCode !== 200) {
-            throw new Error(`OpenAI API returned an error. HTTP Status: ${responseCode}, Response: ${response.getContentText()}`);
-        }
-
-        // Parse and return the JSON response from the API
-        // Extract and return the content from the API response
-        const responseData = JSON.parse(response.getContentText());
-        return responseData.choices[0].message.content.trim(); // Return the message content
-        
-    } catch (error) {
-        // Log and throw any errors that occur during the API request
-        Logger.log(`ERROR: Failed to call OpenAI API - ${error.message}`);
-        throw new Error(`Failed to call OpenAI API: ${error.message}`);
     }
 }
 
